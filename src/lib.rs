@@ -22,15 +22,14 @@ impl fmt::Display for Ebur128Error {
 impl Error for Ebur128Error {}
 
 fn add_vec(a: Vec<f64>, b: &Vec<f64>) -> Vec<f64> {
-    a.iter().zip(b).map(|(x,y)| x + y).collect::<Vec<f64>>()
+    a.iter().zip(b).map(|(x, y)| x + y).collect::<Vec<f64>>()
 }
 
 #[derive(Debug)]
 struct State {
     sample_rate: f64,
     channels: usize,
-    // audio_data: Vec<Vec<SAMPLE>> // non-interleaved, filtered audio
-    loudness_blocks: Vec<Vec<f64>> // time x channel
+    loudness_blocks: Vec<Vec<f64>>, // time x channel
 }
 
 impl State {
@@ -38,8 +37,7 @@ impl State {
         State {
             sample_rate: sample_rate,
             channels: channels,
-            // audio_data: vec![vec![0.; State::audio_buffer_length(sample_rate)]; channels]
-            loudness_blocks: vec![vec![]; channels]
+            loudness_blocks: vec![vec![]; channels],
         }
     }
 
@@ -61,7 +59,14 @@ impl State {
 
     pub fn add_frames(&mut self, interleaved_frames: &[f64]) -> Result<(), Ebur128Error> {
         let deinterleaved_channels: Vec<Vec<f64>> = (0..self.channels)
-            .map(|n| interleaved_frames.iter().skip(n).step_by(self.channels).map(|s| *s).collect())
+            .map(|n| {
+                interleaved_frames
+                    .iter()
+                    .skip(n)
+                    .step_by(self.channels)
+                    .map(|s| *s)
+                    .collect()
+            })
             .collect();
 
         for (lb, ch) in self.loudness_blocks.iter_mut().zip(deinterleaved_channels) {
@@ -74,10 +79,7 @@ impl State {
     pub fn integrated_loudness(&self) -> f64 {
         self.loudness_blocks
             .iter()
-            .fold(
-                vec![0.; self.channels],
-                |sum, val| { add_vec(sum, val) }
-            )
+            .fold(vec![0.; self.channels], |sum, val| add_vec(sum, val))
             .iter()
             .sum()
     }
