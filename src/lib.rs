@@ -79,7 +79,7 @@ impl State {
     pub fn integrated_loudness(&self) -> f64 {
         self.loudness_blocks
             .iter()
-            .fold(vec![0.; self.channels], |sum, val| add_vec(sum, val))
+            .fold(vec![0.; self.channels], add_vec)
             .iter()
             .sum()
     }
