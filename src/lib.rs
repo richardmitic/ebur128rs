@@ -1,12 +1,13 @@
 use std::error::Error;
 use std::fmt;
 
-use biquad::{Coefficients, DirectForm1, Biquad};
+use biquad::{Biquad, Coefficients, DirectForm1};
 
 // Spec defines 400ms block overlapping by 75%
 const AUDIO_BLOCK_S: f64 = 0.1;
 const MOMENTARY_BLOCK_S: f64 = 0.4;
 const SHORT_TERM_BLOCK_S: f64 = 3.;
+const GATING_THRESHOLD_ABSOLUTE: f64 = -70.;
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone)]
 pub enum Channel {
@@ -15,7 +16,7 @@ pub enum Channel {
     Centre = 2,
     Lfe = 3, // unused
     LeftSurround = 4,
-    RightSurround = 5
+    RightSurround = 5,
 }
 
 pub fn channel_from_index(index: usize) -> Channel {
@@ -28,7 +29,6 @@ pub fn channel_from_index(index: usize) -> Channel {
         _ => Channel::RightSurround,
     }
 }
-
 
 #[derive(Debug)]
 struct Ebur128Error {}
@@ -60,7 +60,7 @@ fn channel_gain(channel: Channel) -> f64 {
         Channel::Centre => 1.,
         Channel::LeftSurround => 1.41,
         Channel::RightSurround => 1.41,
-        _ => 0.
+        _ => 0.,
     }
 }
 
@@ -70,7 +70,7 @@ fn get_filters() -> (DirectForm1<f64>, DirectForm1<f64>) {
         a2: 0.73248077421585,
         b0: 1.53512485958697,
         b1: -2.69169618940638,
-        b2: 1.19839281085285
+        b2: 1.19839281085285,
     };
 
     let stage2 = Coefficients {
@@ -78,10 +78,13 @@ fn get_filters() -> (DirectForm1<f64>, DirectForm1<f64>) {
         a2: 0.99007225036621,
         b0: 1.,
         b1: -2.,
-        b2: 1.
+        b2: 1.,
     };
 
-    (DirectForm1::<f64>::new(stage1), DirectForm1::<f64>::new(stage2))
+    (
+        DirectForm1::<f64>::new(stage1),
+        DirectForm1::<f64>::new(stage2),
+    )
 }
 
 pub fn caluclate_channel_loudness(channel: Channel, samples: &[f64]) -> f64 {
@@ -101,15 +104,15 @@ pub fn caluclate_channel(samples: &[f64], channel: Channel) -> f64 {
 
 pub fn deinterleave(samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
     (0..num_channels)
-            .map(|n| {
-                samples
-                    .iter()
-                    .skip(n)
-                    .step_by(num_channels)
-                    .map(|s| *s)
-                    .collect()
-            })
-            .collect()
+        .map(|n| {
+            samples
+                .iter()
+                .skip(n)
+                .step_by(num_channels)
+                .map(|s| *s)
+                .collect()
+        })
+        .collect()
 }
 
 pub fn deinterleave_and_filter(interleaved_samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
@@ -129,7 +132,7 @@ pub fn calculate_loudness_multichannel(interleaved_samples: &[f64], num_channels
     for (index, channel_audio) in audio.into_iter().enumerate() {
         let channel = channel_from_index(index);
         if channel == Channel::Lfe {
-            continue
+            continue;
         }
         sum += caluclate_channel(channel_audio.as_slice(), channel);
     }
@@ -142,7 +145,7 @@ struct State {
     channels: usize,
     loudness_blocks: Vec<f64>,
     integrated_loudness: f64,
-    blocks_processed: usize
+    blocks_processed: usize,
 }
 
 impl State {
@@ -152,7 +155,7 @@ impl State {
             channels: channels,
             loudness_blocks: vec![],
             integrated_loudness: 0.,
-            blocks_processed: 0
+            blocks_processed: 0,
         }
     }
 
@@ -166,17 +169,28 @@ impl State {
 
     pub fn process(&mut self, interleaved_samples: &[f64]) -> Result<(), Ebur128Error> {
         if interleaved_samples.len() != self.samples_per_audio_block() {
-            return Err(Ebur128Error{});
+            return Err(Ebur128Error {});
         }
         let loudness = calculate_loudness_multichannel(interleaved_samples, self.channels);
         self.loudness_blocks.push(loudness);
         Ok(())
     }
 
-    pub fn integrated_loudness(&self) -> Result<f64, Ebur128Error> {
+    pub fn integrated_loudness(&self, gating: bool) -> Result<f64, Ebur128Error> {
         match self.loudness_blocks.is_empty() {
-            true => Err(Ebur128Error{}),
-            false => Ok(self.loudness_blocks.iter().sum::<f64>() / self.loudness_blocks.len() as f64)
+            true => Err(Ebur128Error {}),
+            false => {
+                let threshold = match gating {
+                    true => GATING_THRESHOLD_ABSOLUTE,
+                    false => f64::NEG_INFINITY,
+                };
+                Ok(self
+                    .loudness_blocks
+                    .iter()
+                    .filter(|loudness| **loudness >= threshold)
+                    .sum::<f64>()
+                    / self.loudness_blocks.len() as f64)
+            }
         }
     }
 }
@@ -184,8 +198,8 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, thread_rng};
     use more_asserts::*;
+    use rand::{thread_rng, Rng};
 
     macro_rules! assert_close_enough {
         ($left:expr, $right:expr, $tollerance:expr) => {
@@ -203,7 +217,7 @@ mod tests {
     #[test]
     fn new_state() {
         let state = State::new(48000., 2);
-        assert!(state.integrated_loudness().is_err());
+        assert!(state.integrated_loudness(false).is_err());
     }
 
     #[test]
@@ -228,9 +242,9 @@ mod tests {
     fn integrated_loudness_multiple_frames() {
         let mut state = State::new(48000., 2);
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness1 = state.integrated_loudness().unwrap();
+        let loudness1 = state.integrated_loudness(false).unwrap();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness2 = state.integrated_loudness().unwrap();
+        let loudness2 = state.integrated_loudness(false).unwrap();
         assert_close_enough!(loudness1, loudness2, 0.1);
     }
 
@@ -238,11 +252,12 @@ mod tests {
     fn integrated_loudness_updates() {
         let mut state = State::new(48000., 2);
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness1 = state.integrated_loudness().unwrap();
+        let loudness1 = state.integrated_loudness(false).unwrap();
         assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
-        let loudness2 = state.integrated_loudness().unwrap();
+        let loudness2 = state.integrated_loudness(false).unwrap();
         assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
-        let loudness3 = state.integrated_loudness().unwrap();
+        let loudness3 = state.integrated_loudness(false).unwrap();
+        // println!("{} {} {}", loudness1, loudness2, loudness3);
         assert_gt!(loudness1, loudness2);
         assert_lt!(loudness2, loudness3);
     }
@@ -258,13 +273,19 @@ mod tests {
 
     #[test]
     fn deinterleave_works() {
-        assert_eq!(deinterleave(&[0., 1., 0., 1.], 2), vec![[0., 0.,], [1., 1.,]]);
+        assert_eq!(
+            deinterleave(&[0., 1., 0., 1.], 2),
+            vec![[0., 0.,], [1., 1.,]]
+        );
     }
 
     #[test]
     fn deinterleave_and_filter_works() {
         let (mut f1, mut f2) = get_filters();
-        let left_result: Vec<f64> = vec![0., 1., 1., 1., 1., 1.].into_iter().map(|s| f2.run(f1.run(s))).collect();
+        let left_result: Vec<f64> = vec![0., 1., 1., 1., 1., 1.]
+            .into_iter()
+            .map(|s| f2.run(f1.run(s)))
+            .collect();
 
         let samples = &[0., 0., 1., 2., 1., 2., 1., 2., 1., 2., 1., 2.];
         let result = deinterleave_and_filter(samples, 2);
