@@ -140,7 +140,9 @@ pub fn calculate_loudness_multichannel(interleaved_samples: &[f64], num_channels
 struct State {
     sample_rate: f64,
     channels: usize,
-    loudness_blocks: Vec<Vec<f64>>, // time x channel
+    loudness_blocks: Vec<f64>,
+    integrated_loudness: f64,
+    blocks_processed: usize
 }
 
 impl State {
@@ -148,49 +150,38 @@ impl State {
         State {
             sample_rate: sample_rate,
             channels: channels,
-            loudness_blocks: vec![vec![]; channels],
+            loudness_blocks: vec![],
+            integrated_loudness: 0.,
+            blocks_processed: 0
         }
-    }
-
-    fn audio_buffer_length(sample_rate: f64) -> usize {
-        (sample_rate * SHORT_TERM_BLOCK_S) as usize
     }
 
     fn num_loudness_blocks() -> usize {
         (SHORT_TERM_BLOCK_S / AUDIO_BLOCK_S) as usize
     }
 
-    fn audio_block_samples(self) -> usize {
-        (AUDIO_BLOCK_S * self.sample_rate) as usize
+    fn samples_per_audio_block(&self) -> usize {
+        (AUDIO_BLOCK_S * self.sample_rate) as usize * self.channels
     }
 
-    pub fn add_frames(&mut self, interleaved_frames: &[f64]) -> Result<(), Ebur128Error> {
-        let deinterleaved_channels: Vec<Vec<f64>> = (0..self.channels)
-            .map(|n| {
-                interleaved_frames
-                    .iter()
-                    .skip(n)
-                    .step_by(self.channels)
-                    .map(|s| *s)
-                    .collect()
-            })
-            .collect();
+    fn update_integrated_loudness(&mut self, new_loudness: f64) {
+        self.blocks_processed += 1;
+        let differential = (new_loudness - self.integrated_loudness) / self.blocks_processed as f64;
+        self.integrated_loudness += differential;
+    }
 
-        for (lb, ch) in self.loudness_blocks.iter_mut().zip(deinterleaved_channels) {
-            lb.push(root_mean(ch.as_slice()));
+    pub fn process(&mut self, interleaved_samples: &[f64]) -> Result<(), Ebur128Error> {
+        if interleaved_samples.len() != self.samples_per_audio_block() {
+            return Err(Ebur128Error{});
         }
-
+        let loudness = calculate_loudness_multichannel(interleaved_samples, self.channels);
+        self.update_integrated_loudness(loudness);
+        self.loudness_blocks.push(loudness);
         Ok(())
     }
 
     pub fn integrated_loudness(&self) -> f64 {
-        let scale = 1. / self.loudness_blocks.len() as f64;
-        let sum_loudness: f64 = self.loudness_blocks
-            .iter()
-            .fold(vec![0.; self.channels], add_vec)
-            .iter()
-            .sum();
-        sum_loudness * scale
+        self.integrated_loudness
     }
 }
 
@@ -198,6 +189,15 @@ impl State {
 mod tests {
     use super::*;
     use rand::{Rng, thread_rng};
+    use more_asserts::*;
+
+    macro_rules! assert_close_enough {
+        ($left:expr, $right:expr, $tollerance:expr) => {
+            let (left, right, tollerance) = (&($left), &($right), &($tollerance));
+            assert_ge!(*left, *right - *tollerance);
+            assert_le!(*left, *right + *tollerance);
+        };
+    }
 
     fn create_noise(length: usize, scale: f64) -> Vec<f64> {
         let mut rng = thread_rng();
@@ -211,10 +211,44 @@ mod tests {
     }
 
     #[test]
-    fn frames_are_added() {
+    fn input_too_short() {
         let mut state = State::new(48000., 2);
-        assert!(state.add_frames(&[1., 2., 1., 2., 1., 2.]).is_ok());
-        assert_eq!(state.integrated_loudness(), 2.5);
+        assert!(state.process(vec![0f64; 9599].as_slice()).is_err());
+    }
+
+    #[test]
+    fn input_too_long() {
+        let mut state = State::new(48000., 2);
+        assert!(state.process(vec![0f64; 9601].as_slice()).is_err());
+    }
+
+    #[test]
+    fn input_correct_length() {
+        let mut state = State::new(48000., 2);
+        assert!(state.process(vec![0f64; 9600].as_slice()).is_ok());
+    }
+
+    #[test]
+    fn integrated_loudness_multiple_frames() {
+        let mut state = State::new(48000., 2);
+        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        let loudness1 = state.integrated_loudness();
+        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        let loudness2 = state.integrated_loudness();
+        assert_close_enough!(loudness1, loudness2, 0.1);
+    }
+
+    #[test]
+    fn integrated_loudness_updates() {
+        let mut state = State::new(48000., 2);
+        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        let loudness1 = state.integrated_loudness();
+        assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+        let loudness2 = state.integrated_loudness();
+        assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+        let loudness3 = state.integrated_loudness();
+        assert_gt!(loudness1, loudness2);
+        assert_lt!(loudness2, loudness3);
     }
 
     #[test]
@@ -240,7 +274,6 @@ mod tests {
         let result = deinterleave_and_filter(samples, 2);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], left_result);
-        println!("{:?}", result);
     }
 
     #[test]
@@ -249,7 +282,6 @@ mod tests {
         samples.append(&mut vec![1f64; 19]);
         let (mut f1, mut f2) = get_filters();
         let result: Vec<f64> = samples.into_iter().map(|s| f2.run(f1.run(s))).collect();
-        println!("{:?}", result);
     }
 
     #[test]
