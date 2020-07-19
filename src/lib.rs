@@ -164,24 +164,20 @@ impl State {
         (AUDIO_BLOCK_S * self.sample_rate) as usize * self.channels
     }
 
-    fn update_integrated_loudness(&mut self, new_loudness: f64) {
-        self.blocks_processed += 1;
-        let differential = (new_loudness - self.integrated_loudness) / self.blocks_processed as f64;
-        self.integrated_loudness += differential;
-    }
-
     pub fn process(&mut self, interleaved_samples: &[f64]) -> Result<(), Ebur128Error> {
         if interleaved_samples.len() != self.samples_per_audio_block() {
             return Err(Ebur128Error{});
         }
         let loudness = calculate_loudness_multichannel(interleaved_samples, self.channels);
-        self.update_integrated_loudness(loudness);
         self.loudness_blocks.push(loudness);
         Ok(())
     }
 
-    pub fn integrated_loudness(&self) -> f64 {
-        self.integrated_loudness
+    pub fn integrated_loudness(&self) -> Result<f64, Ebur128Error> {
+        match self.loudness_blocks.is_empty() {
+            true => Err(Ebur128Error{}),
+            false => Ok(self.loudness_blocks.iter().sum::<f64>() / self.loudness_blocks.len() as f64)
+        }
     }
 }
 
@@ -207,7 +203,7 @@ mod tests {
     #[test]
     fn new_state() {
         let state = State::new(48000., 2);
-        assert_eq!(state.integrated_loudness(), 0.);
+        assert!(state.integrated_loudness().is_err());
     }
 
     #[test]
@@ -232,9 +228,9 @@ mod tests {
     fn integrated_loudness_multiple_frames() {
         let mut state = State::new(48000., 2);
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness1 = state.integrated_loudness();
+        let loudness1 = state.integrated_loudness().unwrap();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness2 = state.integrated_loudness();
+        let loudness2 = state.integrated_loudness().unwrap();
         assert_close_enough!(loudness1, loudness2, 0.1);
     }
 
@@ -242,11 +238,11 @@ mod tests {
     fn integrated_loudness_updates() {
         let mut state = State::new(48000., 2);
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness1 = state.integrated_loudness();
+        let loudness1 = state.integrated_loudness().unwrap();
         assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
-        let loudness2 = state.integrated_loudness();
+        let loudness2 = state.integrated_loudness().unwrap();
         assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
-        let loudness3 = state.integrated_loudness();
+        let loudness3 = state.integrated_loudness().unwrap();
         assert_gt!(loudness1, loudness2);
         assert_lt!(loudness2, loudness3);
     }
