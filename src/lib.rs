@@ -218,6 +218,7 @@ mod tests {
     use super::*;
     use more_asserts::*;
     use rand::{thread_rng, Rng};
+    use dasp_signal::{self as signal, Signal};
 
     macro_rules! assert_close_enough {
         ($left:expr, $right:expr, $tollerance:expr) => {
@@ -230,6 +231,10 @@ mod tests {
     fn create_noise(length: usize, scale: f64) -> Vec<f64> {
         let mut rng = thread_rng();
         (0..length).map(|_| rng.gen::<f64>() * scale).collect()
+    }
+
+    fn tone_1k() -> Vec<f64> {
+        signal::rate(48000.).const_hz(1000.).sine().take(48000).collect::<Vec<f64>>()
     }
 
     #[test]
@@ -303,6 +308,17 @@ mod tests {
         let loudness3 = state.integrated_loudness(GatingType::Relative).unwrap();
         assert_eq!(loudness1, loudness2);
         assert_close_enough!(loudness1, loudness3, 0.1);
+    }
+
+    #[test]
+    fn sine() {
+        // Specification states:
+        // "If a 0 dB FS 1 kHz sine wave is applied to the left, centre,
+        // or right channel input, the indicated loudness will equal -3.01 LKFS."
+        let mut state = State::new(48000., 1);
+        assert!(state.process(&tone_1k()[0..4800]).is_ok());
+        let loudness = state.integrated_loudness(GatingType::Absolute).unwrap();
+        assert_close_enough!(loudness, -3.01, 0.01);
     }
 
     #[test]
