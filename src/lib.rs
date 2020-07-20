@@ -19,6 +19,12 @@ pub enum Channel {
     RightSurround = 5,
 }
 
+pub enum GatingType {
+    None,
+    Absolute,
+    Relative,
+}
+
 pub fn channel_from_index(index: usize) -> Channel {
     match index {
         0 => Channel::Left,
@@ -167,6 +173,14 @@ impl State {
         (AUDIO_BLOCK_S * self.sample_rate) as usize * self.channels
     }
 
+    fn gating_threshold(&self, gating: GatingType) -> f64 {
+        match gating {
+            GatingType::None => f64::NEG_INFINITY,
+            GatingType::Absolute => GATING_THRESHOLD_ABSOLUTE,
+            GatingType::Relative => self.integrated_loudness(GatingType::Absolute).unwrap() - 10. // Blind unwrap should be fine - function is not public
+        }
+    }
+
     pub fn process(&mut self, interleaved_samples: &[f64]) -> Result<(), Ebur128Error> {
         if interleaved_samples.len() != self.samples_per_audio_block() {
             return Err(Ebur128Error {});
@@ -176,14 +190,11 @@ impl State {
         Ok(())
     }
 
-    pub fn integrated_loudness(&self, gating: bool) -> Result<f64, Ebur128Error> {
+    pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
         match self.loudness_blocks.is_empty() {
             true => Err(Ebur128Error {}),
             false => {
-                let threshold = match gating {
-                    true => GATING_THRESHOLD_ABSOLUTE,
-                    false => f64::NEG_INFINITY,
-                };
+                let threshold = self.gating_threshold(gating);
 
                 let blocks_above_threshold = self
                     .loudness_blocks
@@ -224,7 +235,7 @@ mod tests {
     #[test]
     fn new_state() {
         let state = State::new(48000., 2);
-        assert!(state.integrated_loudness(false).is_err());
+        assert!(state.integrated_loudness(GatingType::None).is_err());
     }
 
     #[test]
@@ -249,35 +260,47 @@ mod tests {
     fn integrated_loudness_multiple_frames() {
         let mut state = State::new(48000., 2);
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness1 = state.integrated_loudness(false).unwrap();
+        let loudness1 = state.integrated_loudness(GatingType::None).unwrap();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness2 = state.integrated_loudness(false).unwrap();
+        let loudness2 = state.integrated_loudness(GatingType::None).unwrap();
         assert_close_enough!(loudness1, loudness2, 0.1);
     }
 
     #[test]
-    fn integrated_loudness_updates() {
+    fn integrated_loudness_ungated() {
         let mut state = State::new(48000., 2);
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness1 = state.integrated_loudness(false).unwrap();
+        let loudness1 = state.integrated_loudness(GatingType::None).unwrap();
         assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
-        let loudness2 = state.integrated_loudness(false).unwrap();
+        let loudness2 = state.integrated_loudness(GatingType::None).unwrap();
         assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
-        let loudness3 = state.integrated_loudness(false).unwrap();
-        // println!("{} {} {}", loudness1, loudness2, loudness3);
+        let loudness3 = state.integrated_loudness(GatingType::None).unwrap();
         assert_gt!(loudness1, loudness2);
         assert_lt!(loudness2, loudness3);
     }
 
     #[test]
-    fn integrated_loudness_gated() {
+    fn integrated_loudness_gated_absolute() {
         let mut state = State::new(48000., 2);
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness1 = state.integrated_loudness(true).unwrap();
+        let loudness1 = state.integrated_loudness(GatingType::Absolute).unwrap();
         assert!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok());
-        let loudness2 = state.integrated_loudness(true).unwrap();
+        let loudness2 = state.integrated_loudness(GatingType::Absolute).unwrap();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
-        let loudness3 = state.integrated_loudness(true).unwrap();
+        let loudness3 = state.integrated_loudness(GatingType::Absolute).unwrap();
+        assert_eq!(loudness1, loudness2);
+        assert_close_enough!(loudness1, loudness3, 0.1);
+    }
+
+    #[test]
+    fn integrated_loudness_gated_relative() {
+        let mut state = State::new(48000., 2);
+        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        let loudness1 = state.integrated_loudness(GatingType::Relative).unwrap();
+        assert!(state.process(create_noise(9600, 0.01).as_slice()).is_ok());
+        let loudness2 = state.integrated_loudness(GatingType::Relative).unwrap();
+        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        let loudness3 = state.integrated_loudness(GatingType::Relative).unwrap();
         assert_eq!(loudness1, loudness2);
         assert_close_enough!(loudness1, loudness3, 0.1);
     }
