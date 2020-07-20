@@ -184,12 +184,19 @@ impl State {
                     true => GATING_THRESHOLD_ABSOLUTE,
                     false => f64::NEG_INFINITY,
                 };
+
+                let blocks_above_threshold = self
+                    .loudness_blocks
+                    .iter()
+                    .filter(|loudness| **loudness >= threshold)
+                    .count();
+
                 Ok(self
                     .loudness_blocks
                     .iter()
                     .filter(|loudness| **loudness >= threshold)
                     .sum::<f64>()
-                    / self.loudness_blocks.len() as f64)
+                    / blocks_above_threshold as f64)
             }
         }
     }
@@ -260,6 +267,19 @@ mod tests {
         // println!("{} {} {}", loudness1, loudness2, loudness3);
         assert_gt!(loudness1, loudness2);
         assert_lt!(loudness2, loudness3);
+    }
+
+    #[test]
+    fn integrated_loudness_gated() {
+        let mut state = State::new(48000., 2);
+        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        let loudness1 = state.integrated_loudness(true).unwrap();
+        assert!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok());
+        let loudness2 = state.integrated_loudness(true).unwrap();
+        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        let loudness3 = state.integrated_loudness(true).unwrap();
+        assert_eq!(loudness1, loudness2);
+        assert_close_enough!(loudness1, loudness3, 0.1);
     }
 
     #[test]
