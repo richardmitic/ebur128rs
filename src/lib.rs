@@ -47,14 +47,6 @@ impl fmt::Display for Ebur128Error {
 
 impl Error for Ebur128Error {}
 
-fn add_vec(a: Vec<f64>, b: &Vec<f64>) -> Vec<f64> {
-    a.iter().zip(b).map(|(x, y)| x + y).collect::<Vec<f64>>()
-}
-
-fn scale_vec(a: Vec<f64>, scale: f64) -> Vec<f64> {
-    a.iter().map(|x| x * scale).collect::<Vec<f64>>()
-}
-
 fn root_mean(values: &[f64]) -> f64 {
     values.iter().map(|v| (*v).powi(2)).sum::<f64>() / values.len() as f64
 }
@@ -93,7 +85,7 @@ fn get_filters() -> (DirectForm1<f64>, DirectForm1<f64>) {
     )
 }
 
-pub fn caluclate_channel_loudness(channel: Channel, samples: &[f64]) -> f64 {
+pub fn calculate_channel_loudness(channel: Channel, samples: &[f64]) -> f64 {
     // FIXME: assume the audio block is the correct length
     // FIXME: assume sampling rate is 48kHz
     let mut filtered_audio: Vec<f64> = Vec::with_capacity(samples.len());
@@ -104,7 +96,7 @@ pub fn caluclate_channel_loudness(channel: Channel, samples: &[f64]) -> f64 {
     root_mean(filtered_audio.as_slice()) * channel_gain(channel)
 }
 
-pub fn caluclate_channel(samples: &[f64], channel: Channel) -> f64 {
+pub fn calculate_channel(samples: &[f64], channel: Channel) -> f64 {
     root_mean(samples) * channel_gain(channel)
 }
 
@@ -140,7 +132,7 @@ pub fn calculate_loudness_multichannel(interleaved_samples: &[f64], num_channels
         if channel == Channel::Lfe {
             continue;
         }
-        sum += caluclate_channel(channel_audio.as_slice(), channel);
+        sum += calculate_channel(channel_audio.as_slice(), channel);
     }
     -0.691 + (10. * sum.log10())
 }
@@ -181,7 +173,7 @@ impl State {
         match gating {
             GatingType::None => f64::NEG_INFINITY,
             GatingType::Absolute => GATING_THRESHOLD_ABSOLUTE,
-            GatingType::Relative => self.integrated_loudness(GatingType::Absolute).unwrap() - 10. // Blind unwrap should be fine - function is not public
+            GatingType::Relative => self.integrated_loudness(GatingType::Absolute).unwrap() - 10., // Blind unwrap should be fine - function is not public
         }
     }
 
@@ -194,20 +186,22 @@ impl State {
         Ok(())
     }
 
-    fn loudness(&self, gating: GatingType, starting_block_index: usize) -> Result<f64, Ebur128Error> {
+    fn loudness(
+        &self,
+        gating: GatingType,
+        starting_block_index: usize,
+    ) -> Result<f64, Ebur128Error> {
         match self.loudness_blocks.is_empty() {
             true => Err(Ebur128Error {}),
             false => {
                 let threshold = self.gating_threshold(gating);
 
-                let blocks_above_threshold = self
-                    .loudness_blocks[starting_block_index..]
+                let blocks_above_threshold = self.loudness_blocks[starting_block_index..]
                     .iter()
                     .filter(|loudness| **loudness >= threshold)
                     .count();
 
-                Ok(self
-                    .loudness_blocks[starting_block_index..]
+                Ok(self.loudness_blocks[starting_block_index..]
                     .iter()
                     .filter(|loudness| **loudness >= threshold)
                     .sum::<f64>()
@@ -221,12 +215,20 @@ impl State {
     }
 
     pub fn short_term_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
-        let starting_block_idx = self.loudness_blocks.len().checked_sub(Self::short_term_loudness_blocks()).unwrap_or(0);
+        let starting_block_idx = self
+            .loudness_blocks
+            .len()
+            .checked_sub(Self::short_term_loudness_blocks())
+            .unwrap_or(0);
         self.loudness(gating, starting_block_idx)
     }
 
     pub fn momentary_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
-        let starting_block_idx = self.loudness_blocks.len().checked_sub(Self::momentary_loudness_blocks()).unwrap_or(0);
+        let starting_block_idx = self
+            .loudness_blocks
+            .len()
+            .checked_sub(Self::momentary_loudness_blocks())
+            .unwrap_or(0);
         self.loudness(gating, starting_block_idx)
     }
 }
@@ -234,9 +236,9 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dasp_signal::{self as signal, Signal};
     use more_asserts::*;
     use rand::{thread_rng, Rng};
-    use dasp_signal::{self as signal, Signal};
 
     macro_rules! assert_close_enough {
         ($left:expr, $right:expr, $tollerance:expr) => {
@@ -252,7 +254,11 @@ mod tests {
     }
 
     fn tone_1k() -> Vec<f64> {
-        signal::rate(48000.).const_hz(1000.).sine().take(48000).collect::<Vec<f64>>()
+        signal::rate(48000.)
+            .const_hz(1000.)
+            .sine()
+            .take(48000)
+            .collect::<Vec<f64>>()
     }
 
     #[test]
@@ -374,11 +380,11 @@ mod tests {
 
     #[test]
     fn channel_loudness() {
-        assert!(caluclate_channel_loudness(Channel::Left, &[1., 1., 1.]) > 2.);
-        assert!(caluclate_channel_loudness(Channel::Right, &[1., 1., 1.]) > 2.);
-        assert!(caluclate_channel_loudness(Channel::Centre, &[1., 1., 1.]) > 2.);
-        assert!(caluclate_channel_loudness(Channel::LeftSurround, &[1., 1., 1.]) > 2.5);
-        assert!(caluclate_channel_loudness(Channel::RightSurround, &[1., 1., 1.]) > 2.5);
+        assert_gt!(calculate_channel_loudness(Channel::Left, &[1., 1., 1.]), 2.);
+        assert_gt!(calculate_channel_loudness(Channel::Right, &[1., 1., 1.]), 2.);
+        assert_gt!(calculate_channel_loudness(Channel::Centre, &[1., 1., 1.]), 2.);
+        assert_gt!(calculate_channel_loudness(Channel::LeftSurround, &[1., 1., 1.]), 2.5);
+        assert_gt!(calculate_channel_loudness(Channel::RightSurround, &[1., 1., 1.]), 2.5);
     }
 
     #[test]
@@ -409,6 +415,11 @@ mod tests {
         samples.append(&mut vec![1f64; 19]);
         let (mut f1, mut f2) = get_filters();
         let result: Vec<f64> = samples.into_iter().map(|s| f2.run(f1.run(s))).collect();
+        assert_eq!(result[0], 0.);
+        assert_gt!(result[1], result[0]);
+        for i in 2..20 {
+            assert_lt!(result[i], result[i-1]);
+        }
     }
 
     #[test]
