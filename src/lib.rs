@@ -165,8 +165,12 @@ impl State {
         }
     }
 
-    fn num_loudness_blocks() -> usize {
+    fn short_term_loudness_blocks() -> usize {
         (SHORT_TERM_BLOCK_S / AUDIO_BLOCK_S) as usize
+    }
+
+    fn momentary_loudness_blocks() -> usize {
+        (MOMENTARY_BLOCK_S / AUDIO_BLOCK_S) as usize
     }
 
     fn samples_per_audio_block(&self) -> usize {
@@ -190,26 +194,40 @@ impl State {
         Ok(())
     }
 
-    pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
+    fn loudness(&self, gating: GatingType, starting_block_index: usize) -> Result<f64, Ebur128Error> {
         match self.loudness_blocks.is_empty() {
             true => Err(Ebur128Error {}),
             false => {
                 let threshold = self.gating_threshold(gating);
 
                 let blocks_above_threshold = self
-                    .loudness_blocks
+                    .loudness_blocks[starting_block_index..]
                     .iter()
                     .filter(|loudness| **loudness >= threshold)
                     .count();
 
                 Ok(self
-                    .loudness_blocks
+                    .loudness_blocks[starting_block_index..]
                     .iter()
                     .filter(|loudness| **loudness >= threshold)
                     .sum::<f64>()
                     / blocks_above_threshold as f64)
             }
         }
+    }
+
+    pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
+        self.loudness(gating, 0)
+    }
+
+    pub fn short_term_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
+        let starting_block_idx = self.loudness_blocks.len().checked_sub(Self::short_term_loudness_blocks()).unwrap_or(0);
+        self.loudness(gating, starting_block_idx)
+    }
+
+    pub fn momentary_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
+        let starting_block_idx = self.loudness_blocks.len().checked_sub(Self::momentary_loudness_blocks()).unwrap_or(0);
+        self.loudness(gating, starting_block_idx)
     }
 }
 
@@ -308,6 +326,39 @@ mod tests {
         let loudness3 = state.integrated_loudness(GatingType::Relative).unwrap();
         assert_eq!(loudness1, loudness2);
         assert_close_enough!(loudness1, loudness3, 0.1);
+    }
+
+    #[test]
+    fn short_term_loudness_ungated() {
+        let mut state = State::new(48000., 2);
+        for _ in 0..30 {
+            assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+        }
+        for _ in 0..30 {
+            assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+        }
+        let il = state.integrated_loudness(GatingType::None).unwrap();
+        let stl = state.short_term_loudness(GatingType::None).unwrap();
+        assert_gt!(stl, il);
+    }
+
+    #[test]
+    fn momentary_loudness_ungated() {
+        let mut state = State::new(48000., 2);
+        for _ in 0..30 {
+            assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+        }
+        for _ in 0..30 {
+            assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        }
+        for _ in 0..4 {
+            assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+        }
+        let il = state.integrated_loudness(GatingType::None).unwrap();
+        let stl = state.short_term_loudness(GatingType::None).unwrap();
+        let ml = state.momentary_loudness(GatingType::None).unwrap();
+        assert_lt!(il, stl);
+        assert_lt!(stl, ml);
     }
 
     #[test]
