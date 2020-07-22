@@ -19,6 +19,7 @@ pub enum Channel {
     RightSurround = 5,
 }
 
+#[derive(PartialEq, Eq, Hash, Copy, Clone)]
 pub enum GatingType {
     None,
     Absolute,
@@ -142,7 +143,7 @@ pub struct State {
     sample_rate: f64,
     channels: usize,
     loudness_blocks: Vec<f64>,
-    running_integrated_loudness: f64,
+    running_loudness: f64,
     blocks_processed: f64,
     streaming: bool,
 }
@@ -157,9 +158,9 @@ impl State {
             sample_rate: sample_rate,
             channels: channels,
             loudness_blocks: vec![],
-            running_integrated_loudness: 0.,
+            running_loudness: 0.,
             blocks_processed: 0.,
-            streaming: streaming
+            streaming: streaming,
         }
     }
 
@@ -183,12 +184,21 @@ impl State {
         }
     }
 
+    fn update_running_loudness(&mut self, val: f64) {
+        self.blocks_processed += 1.;
+        self.running_loudness += (val - self.running_loudness) / self.blocks_processed;
+    }
+
     pub fn process(&mut self, interleaved_samples: &[f64]) -> Result<(), Ebur128Error> {
         if interleaved_samples.len() != self.samples_per_audio_block() {
             return Err(Ebur128Error {});
         }
         let loudness = calculate_loudness_multichannel(interleaved_samples, self.channels);
-        self.loudness_blocks.push(loudness);
+        if self.streaming {
+            self.update_running_loudness(loudness);
+        } else {
+            self.loudness_blocks.push(loudness);
+        }
         Ok(())
     }
 
@@ -217,6 +227,9 @@ impl State {
     }
 
     pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
+        if self.streaming && gating == GatingType::Relative {
+            return Err(Ebur128Error{});
+        }
         self.loudness(gating, 0)
     }
 
@@ -380,6 +393,15 @@ mod tests {
             assert_eq!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok(), true);
         }
         assert_eq!(state.integrated_loudness(GatingType::Absolute).is_err(), true);
+    }
+
+    #[test]
+    fn no_two_pass_in_streaming_mode() {
+        let mut state = State::new(48000., 1, true);
+        for _ in 0..30 {
+            assert_eq!(state.process(create_noise(4800, 0.5).as_slice()).is_ok(), true);
+        }
+        assert_eq!(state.integrated_loudness(GatingType::Relative).is_err(), true);
     }
 
     #[test]
