@@ -142,18 +142,24 @@ pub struct State {
     sample_rate: f64,
     channels: usize,
     loudness_blocks: Vec<f64>,
-    integrated_loudness: f64,
-    blocks_processed: usize,
+    running_integrated_loudness: f64,
+    blocks_processed: f64,
+    streaming: bool,
 }
 
 impl State {
-    pub fn new(sample_rate: f64, channels: usize) -> State {
+    pub fn default() -> State {
+        State::new(48000., 2, false)
+    }
+
+    pub fn new(sample_rate: f64, channels: usize, streaming: bool) -> State {
         State {
             sample_rate: sample_rate,
             channels: channels,
             loudness_blocks: vec![],
-            integrated_loudness: 0.,
-            blocks_processed: 0,
+            running_integrated_loudness: 0.,
+            blocks_processed: 0.,
+            streaming: streaming
         }
     }
 
@@ -263,31 +269,31 @@ mod tests {
 
     #[test]
     fn new_state() {
-        let state = State::new(48000., 2);
+        let state = State::default();
         assert!(state.integrated_loudness(GatingType::None).is_err());
     }
 
     #[test]
     fn input_too_short() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         assert!(state.process(vec![0f64; 9599].as_slice()).is_err());
     }
 
     #[test]
     fn input_too_long() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         assert!(state.process(vec![0f64; 9601].as_slice()).is_err());
     }
 
     #[test]
     fn input_correct_length() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         assert!(state.process(vec![0f64; 9600].as_slice()).is_ok());
     }
 
     #[test]
     fn integrated_loudness_multiple_frames() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
         let loudness1 = state.integrated_loudness(GatingType::None).unwrap();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
@@ -297,7 +303,7 @@ mod tests {
 
     #[test]
     fn integrated_loudness_ungated() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
         let loudness1 = state.integrated_loudness(GatingType::None).unwrap();
         assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
@@ -310,7 +316,7 @@ mod tests {
 
     #[test]
     fn integrated_loudness_gated_absolute() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
         let loudness1 = state.integrated_loudness(GatingType::Absolute).unwrap();
         assert!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok());
@@ -323,7 +329,7 @@ mod tests {
 
     #[test]
     fn integrated_loudness_gated_relative() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
         let loudness1 = state.integrated_loudness(GatingType::Relative).unwrap();
         assert!(state.process(create_noise(9600, 0.01).as_slice()).is_ok());
@@ -336,7 +342,7 @@ mod tests {
 
     #[test]
     fn short_term_loudness_ungated() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         for _ in 0..30 {
             assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
         }
@@ -350,7 +356,7 @@ mod tests {
 
     #[test]
     fn momentary_loudness_ungated() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         for _ in 0..30 {
             assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
         }
@@ -369,7 +375,7 @@ mod tests {
 
     #[test]
     fn everything_below_threshold() {
-        let mut state = State::new(48000., 2);
+        let mut state = State::default();
         for _ in 0..30 {
             assert_eq!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok(), true);
         }
@@ -381,7 +387,7 @@ mod tests {
         // Specification states:
         // "If a 0 dB FS 1 kHz sine wave is applied to the left, centre,
         // or right channel input, the indicated loudness will equal -3.01 LKFS."
-        let mut state = State::new(48000., 1);
+        let mut state = State::new(48000., 1, false);
         assert!(state.process(&tone_1k()[0..4800]).is_ok());
         let loudness = state.integrated_loudness(GatingType::Absolute).unwrap();
         assert_close_enough!(loudness, -3.01, 0.01);
