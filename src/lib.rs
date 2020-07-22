@@ -37,7 +37,7 @@ pub fn channel_from_index(index: usize) -> Channel {
 }
 
 #[derive(Debug)]
-struct Ebur128Error {}
+pub struct Ebur128Error {}
 
 impl fmt::Display for Ebur128Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -138,7 +138,7 @@ pub fn calculate_loudness_multichannel(interleaved_samples: &[f64], num_channels
 }
 
 #[derive(Debug)]
-struct State {
+pub struct State {
     sample_rate: f64,
     channels: usize,
     loudness_blocks: Vec<f64>,
@@ -191,23 +191,23 @@ impl State {
         gating: GatingType,
         starting_block_index: usize,
     ) -> Result<f64, Ebur128Error> {
-        match self.loudness_blocks.is_empty() {
-            true => Err(Ebur128Error {}),
-            false => {
-                let threshold = self.gating_threshold(gating);
 
-                let blocks_above_threshold = self.loudness_blocks[starting_block_index..]
-                    .iter()
-                    .filter(|loudness| **loudness >= threshold)
-                    .count();
+        let threshold = self.gating_threshold(gating);
 
-                Ok(self.loudness_blocks[starting_block_index..]
-                    .iter()
-                    .filter(|loudness| **loudness >= threshold)
-                    .sum::<f64>()
-                    / blocks_above_threshold as f64)
-            }
+        let blocks_above_threshold = self.loudness_blocks[starting_block_index..]
+            .iter()
+            .filter(|loudness| **loudness >= threshold)
+            .count();
+
+        if blocks_above_threshold == 0 {
+            return Err(Ebur128Error {});
         }
+
+        Ok(self.loudness_blocks[starting_block_index..]
+            .iter()
+            .filter(|loudness| **loudness >= threshold)
+            .sum::<f64>()
+            / blocks_above_threshold as f64)
     }
 
     pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
@@ -365,6 +365,15 @@ mod tests {
         let ml = state.momentary_loudness(GatingType::None).unwrap();
         assert_lt!(il, stl);
         assert_lt!(stl, ml);
+    }
+
+    #[test]
+    fn everything_below_threshold() {
+        let mut state = State::new(48000., 2);
+        for _ in 0..30 {
+            assert_eq!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok(), true);
+        }
+        assert_eq!(state.integrated_loudness(GatingType::Absolute).is_err(), true);
     }
 
     #[test]
