@@ -1,6 +1,9 @@
-use std::error::Error;
-use std::fmt;
+#[macro_use]
+extern crate enum_display_derive;
 
+use std::error::Error;
+use std::fmt::{self, Display};
+use std::result::Result;
 use biquad::{Biquad, Coefficients, DirectForm1};
 
 // Spec defines 400ms block overlapping by 75%
@@ -9,7 +12,7 @@ const MOMENTARY_BLOCK_S: f64 = 0.4;
 const SHORT_TERM_BLOCK_S: f64 = 3.;
 const GATING_THRESHOLD_ABSOLUTE: f64 = -70.;
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Ord, PartialOrd, Debug, Display)]
 pub enum Channel {
     Left = 0,
     Right = 1,
@@ -19,11 +22,19 @@ pub enum Channel {
     RightSurround = 5,
 }
 
-#[derive(PartialEq, Eq, Hash, Copy, Clone)]
+impl Default for Channel {
+    fn default() -> Self { Channel::Left }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Display)]
 pub enum GatingType {
     None,
     Absolute,
     Relative,
+}
+
+impl Default for GatingType {
+    fn default() -> Self { GatingType::None }
 }
 
 pub fn channel_from_index(index: usize) -> Channel {
@@ -37,13 +48,12 @@ pub fn channel_from_index(index: usize) -> Channel {
     }
 }
 
-#[derive(Debug)]
-pub struct Ebur128Error {}
-
-impl fmt::Display for Ebur128Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Ebur128Error is here!")
-    }
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Ord, PartialOrd, Debug, Display)]
+pub enum Ebur128Error {
+    NotEnoughAudio,
+    TooQuiet,
+    NotAvailable,
+    WrongBlockSize,
 }
 
 impl Error for Ebur128Error {}
@@ -209,7 +219,7 @@ impl State {
     ) -> Result<f64, Ebur128Error> {
         if self.streaming {
             return match self.blocks_processed as usize {
-                0 => Err(Ebur128Error {}),
+                0 => Err(Ebur128Error::NotEnoughAudio),
                 _ => Ok(self.running_loudness),
             };
         }
@@ -222,7 +232,7 @@ impl State {
             .count();
 
         if blocks_above_threshold == 0 {
-            return Err(Ebur128Error {});
+            return Err(Ebur128Error::TooQuiet);
         }
 
         Ok(self.loudness_blocks[starting_block_index..]
@@ -234,7 +244,7 @@ impl State {
 
     pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
         if self.streaming && gating == GatingType::Relative {
-            return Err(Ebur128Error {});
+            return Err(Ebur128Error::NotAvailable);
         }
         self.loudness(gating, 0)
     }
