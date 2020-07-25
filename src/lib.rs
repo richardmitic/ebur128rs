@@ -1,10 +1,10 @@
 #[macro_use]
 extern crate enum_display_derive;
 
-use std::error::Error;
-use std::fmt::{self, Display};
-use std::result::Result;
 use biquad::{Biquad, Coefficients, DirectForm1};
+use std::error::Error;
+use std::fmt::Display;
+use std::result::Result;
 
 // Spec defines 400ms block overlapping by 75%
 const AUDIO_BLOCK_S: f64 = 0.1;
@@ -23,7 +23,9 @@ pub enum Channel {
 }
 
 impl Default for Channel {
-    fn default() -> Self { Channel::Left }
+    fn default() -> Self {
+        Channel::Left
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Display)]
@@ -34,7 +36,9 @@ pub enum GatingType {
 }
 
 impl Default for GatingType {
-    fn default() -> Self { GatingType::None }
+    fn default() -> Self {
+        GatingType::None
+    }
 }
 
 pub fn channel_from_index(index: usize) -> Channel {
@@ -199,15 +203,23 @@ impl State {
         self.running_loudness += (val - self.running_loudness) / self.blocks_processed;
     }
 
+    fn store_loudness_block(&mut self, loudness: f64) {
+        self.loudness_blocks.push(loudness);
+        if self.streaming {
+            while self.loudness_blocks.len() > Self::short_term_loudness_blocks() {
+                self.loudness_blocks.remove(0);
+            }
+        }
+    }
+
     pub fn process(&mut self, interleaved_samples: &[f64]) -> Result<(), Ebur128Error> {
         if interleaved_samples.len() != self.samples_per_audio_block() {
-            return Err(Ebur128Error {});
+            return Err(Ebur128Error::WrongBlockSize);
         }
         let loudness = calculate_loudness_multichannel(interleaved_samples, self.channels);
+        self.store_loudness_block(loudness);
         if self.streaming {
             self.update_running_loudness(loudness);
-        } else {
-            self.loudness_blocks.push(loudness);
         }
         Ok(())
     }
@@ -217,13 +229,6 @@ impl State {
         gating: GatingType,
         starting_block_index: usize,
     ) -> Result<f64, Ebur128Error> {
-        if self.streaming {
-            return match self.blocks_processed as usize {
-                0 => Err(Ebur128Error::NotEnoughAudio),
-                _ => Ok(self.running_loudness),
-            };
-        }
-
         let threshold = self.gating_threshold(gating);
 
         let blocks_above_threshold = self.loudness_blocks[starting_block_index..]
@@ -243,8 +248,14 @@ impl State {
     }
 
     pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
-        if self.streaming && gating == GatingType::Relative {
-            return Err(Ebur128Error::NotAvailable);
+        if self.streaming {
+            if gating == GatingType::Relative {
+                return Err(Ebur128Error::NotAvailable);
+            }
+            if self.blocks_processed == 0. {
+                return Err(Ebur128Error::NotEnoughAudio);
+            }
+            return Ok(self.running_loudness);
         }
         self.loudness(gating, 0)
     }
@@ -431,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn no_two_pass_in_streaming_mode() {
+    fn streaming_mode_no_relative_threshold() {
         let mut state = State::new(48000., 1, true);
         for _ in 0..30 {
             assert_eq!(
@@ -443,6 +454,39 @@ mod tests {
             state.integrated_loudness(GatingType::Relative).is_err(),
             true
         );
+    }
+
+    #[test]
+    fn streaming_mode_short_term_loudness_ungated() {
+        let mut state = State::new(48000., 2, true);
+        for _ in 0..30 {
+            assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+        }
+        for _ in 0..30 {
+            assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+        }
+        let il = state.integrated_loudness(GatingType::None).unwrap();
+        let stl = state.short_term_loudness(GatingType::None).unwrap();
+        assert_gt!(stl, il);
+    }
+
+    #[test]
+    fn streaming_mode_momentary_loudness_ungated() {
+        let mut state = State::new(48000., 2, true);
+        for _ in 0..30 {
+            assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+        }
+        for _ in 0..30 {
+            assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        }
+        for _ in 0..4 {
+            assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+        }
+        let il = state.integrated_loudness(GatingType::None).unwrap();
+        let stl = state.short_term_loudness(GatingType::None).unwrap();
+        let ml = state.momentary_loudness(GatingType::None).unwrap();
+        assert_lt!(il, stl);
+        assert_lt!(stl, ml);
     }
 
     #[test]
