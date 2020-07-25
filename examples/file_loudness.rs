@@ -11,7 +11,10 @@ pub fn main() {
     }
     let mut reader = audrey::read::open(args[1].clone()).unwrap();
     let channels = reader.description().channel_count() as usize;
-    let samples = reader.samples::<f64>().flat_map(|s| s).collect::<Vec<f64>>();
+    let samples = reader
+        .samples::<f64>()
+        .flat_map(|s| s)
+        .collect::<Vec<f64>>();
     let mut state = ebur128rs::State::new(48000., channels, false);
 
     for chunk in samples.as_slice().chunks_exact(9600) {
@@ -20,8 +23,12 @@ pub fn main() {
             eprintln!("{:?}", result);
             break;
         } else {
-            let ml = state.momentary_loudness(ebur128rs::GatingType::Absolute).unwrap();
-            let stl = state.short_term_loudness(ebur128rs::GatingType::Absolute).unwrap();
+            let ml = state
+                .momentary_loudness(ebur128rs::GatingType::Absolute)
+                .unwrap();
+            let stl = state
+                .short_term_loudness(ebur128rs::GatingType::Absolute)
+                .unwrap();
             println!("momentary:{:?} short term:{:?}", ml, stl);
         }
     }

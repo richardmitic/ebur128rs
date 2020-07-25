@@ -207,12 +207,11 @@ impl State {
         gating: GatingType,
         starting_block_index: usize,
     ) -> Result<f64, Ebur128Error> {
-
         if self.streaming {
             return match self.blocks_processed as usize {
                 0 => Err(Ebur128Error {}),
                 _ => Ok(self.running_loudness),
-            }
+            };
         }
 
         let threshold = self.gating_threshold(gating);
@@ -235,7 +234,7 @@ impl State {
 
     pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
         if self.streaming && gating == GatingType::Relative {
-            return Err(Ebur128Error{});
+            return Err(Ebur128Error {});
         }
         self.loudness(gating, 0)
     }
@@ -397,16 +396,25 @@ mod tests {
     fn everything_below_threshold() {
         let mut state = State::default();
         for _ in 0..30 {
-            assert_eq!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok(), true);
+            assert_eq!(
+                state.process(create_noise(9600, 0.0001).as_slice()).is_ok(),
+                true
+            );
         }
-        assert_eq!(state.integrated_loudness(GatingType::Absolute).is_err(), true);
+        assert_eq!(
+            state.integrated_loudness(GatingType::Absolute).is_err(),
+            true
+        );
     }
 
     #[test]
     fn streaming_mode_integrated_loudness() {
         let mut state = State::new(48000., 1, true);
         for _ in 0..30 {
-            assert_eq!(state.process(create_noise(4800, 0.5).as_slice()).is_ok(), true);
+            assert_eq!(
+                state.process(create_noise(4800, 0.5).as_slice()).is_ok(),
+                true
+            );
         }
         let il = state.integrated_loudness(GatingType::Absolute).unwrap();
         assert_close_enough!(il, -13.6, 0.1);
@@ -416,9 +424,15 @@ mod tests {
     fn no_two_pass_in_streaming_mode() {
         let mut state = State::new(48000., 1, true);
         for _ in 0..30 {
-            assert_eq!(state.process(create_noise(4800, 0.5).as_slice()).is_ok(), true);
+            assert_eq!(
+                state.process(create_noise(4800, 0.5).as_slice()).is_ok(),
+                true
+            );
         }
-        assert_eq!(state.integrated_loudness(GatingType::Relative).is_err(), true);
+        assert_eq!(
+            state.integrated_loudness(GatingType::Relative).is_err(),
+            true
+        );
     }
 
     #[test]
@@ -435,10 +449,22 @@ mod tests {
     #[test]
     fn channel_loudness() {
         assert_gt!(calculate_channel_loudness(Channel::Left, &[1., 1., 1.]), 2.);
-        assert_gt!(calculate_channel_loudness(Channel::Right, &[1., 1., 1.]), 2.);
-        assert_gt!(calculate_channel_loudness(Channel::Centre, &[1., 1., 1.]), 2.);
-        assert_gt!(calculate_channel_loudness(Channel::LeftSurround, &[1., 1., 1.]), 2.5);
-        assert_gt!(calculate_channel_loudness(Channel::RightSurround, &[1., 1., 1.]), 2.5);
+        assert_gt!(
+            calculate_channel_loudness(Channel::Right, &[1., 1., 1.]),
+            2.
+        );
+        assert_gt!(
+            calculate_channel_loudness(Channel::Centre, &[1., 1., 1.]),
+            2.
+        );
+        assert_gt!(
+            calculate_channel_loudness(Channel::LeftSurround, &[1., 1., 1.]),
+            2.5
+        );
+        assert_gt!(
+            calculate_channel_loudness(Channel::RightSurround, &[1., 1., 1.]),
+            2.5
+        );
     }
 
     #[test]
@@ -472,7 +498,7 @@ mod tests {
         assert_eq!(result[0], 0.);
         assert_gt!(result[1], result[0]);
         for i in 2..20 {
-            assert_lt!(result[i], result[i-1]);
+            assert_lt!(result[i], result[i - 1]);
         }
     }
 
