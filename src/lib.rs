@@ -208,6 +208,13 @@ impl State {
         starting_block_index: usize,
     ) -> Result<f64, Ebur128Error> {
 
+        if self.streaming {
+            return match self.blocks_processed as usize {
+                0 => Err(Ebur128Error {}),
+                _ => Ok(self.running_loudness),
+            }
+        }
+
         let threshold = self.gating_threshold(gating);
 
         let blocks_above_threshold = self.loudness_blocks[starting_block_index..]
@@ -393,6 +400,16 @@ mod tests {
             assert_eq!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok(), true);
         }
         assert_eq!(state.integrated_loudness(GatingType::Absolute).is_err(), true);
+    }
+
+    #[test]
+    fn streaming_mode_integrated_loudness() {
+        let mut state = State::new(48000., 1, true);
+        for _ in 0..30 {
+            assert_eq!(state.process(create_noise(4800, 0.5).as_slice()).is_ok(), true);
+        }
+        let il = state.integrated_loudness(GatingType::Absolute).unwrap();
+        assert_close_enough!(il, -13.6, 0.1);
     }
 
     #[test]
