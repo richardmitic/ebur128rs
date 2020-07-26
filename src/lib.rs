@@ -3,6 +3,10 @@
 //! It exposes functions to calculate the loudess of a chunk of audio,
 //! plus a higher-level interface that calculates loudness over time
 //! according the restrictions defined in EBU R-128.
+//!
+//! TODO:
+//! * Support sample rates other than 48kHz
+//! * Become agnostic to audio chunk size
 
 #![warn(missing_docs)]
 
@@ -228,6 +232,12 @@ impl Default for State {
 impl State {
     /// Construct a new loudness state. Use `new` instead of `default` if you require
     /// any channel count other than 2 or if you need streaming mode.
+    ///
+    /// If `streaming` is `false`, `State` will keep a record of the loudness of every
+    /// block ever processed. If `streaming` is `true`, `State` will limit its records
+    /// to the number required to calculate the short-term loudness (3 seconds worth),
+    /// and integrated loudness with a relative threshold will not be available. All
+    /// other loudness calculations will work as normal.
     ///
     /// Currently only 48000Hz sample rate is supported. Using other sample rates will
     /// not produce any errors but will affect the accuracy of the loudness measurement.
