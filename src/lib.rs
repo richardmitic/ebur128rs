@@ -152,7 +152,7 @@ pub fn calculate_loudness_multichannel(interleaved_samples: &[f64], num_channels
     -0.691 + (10. * sum.log10())
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct State {
     sample_rate: f64,
     channels: usize,
@@ -162,11 +162,13 @@ pub struct State {
     streaming: bool,
 }
 
-impl State {
-    pub fn default() -> State {
+impl Default for State {
+    fn default() -> Self {
         State::new(48000., 2, false)
     }
+}
 
+impl State {
     pub fn new(sample_rate: f64, channels: usize, streaming: bool) -> State {
         State {
             sample_rate: sample_rate,
