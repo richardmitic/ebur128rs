@@ -2,14 +2,15 @@ extern crate audrey;
 extern crate ebur128rs;
 
 use std::env;
+use std::error::Error;
 
-pub fn main() {
+pub fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         println!("Usage: ./file_loudness <wav file>");
-        return;
+        return Ok(());
     }
-    let mut reader = audrey::read::open(args[1].clone()).unwrap();
+    let mut reader = audrey::read::open(args[1].clone())?;
     let channels = reader.description().channel_count() as usize;
     let samples = reader
         .samples::<f64>()
@@ -24,11 +25,9 @@ pub fn main() {
             break;
         } else {
             let ml = state
-                .momentary_loudness(ebur128rs::GatingType::Absolute)
-                .unwrap();
+                .momentary_loudness(ebur128rs::GatingType::Absolute);
             let stl = state
-                .short_term_loudness(ebur128rs::GatingType::Absolute)
-                .unwrap();
+                .short_term_loudness(ebur128rs::GatingType::Absolute);
             println!("momentary:{:?} short term:{:?}", ml, stl);
         }
     }
@@ -37,4 +36,6 @@ pub fn main() {
     let ilr = state.integrated_loudness(ebur128rs::GatingType::Relative);
     println!("integrated absolute:{:?}", ila);
     println!("integrated relative:{:?}", ilr);
+
+    Ok(())
 }
