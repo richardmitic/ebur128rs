@@ -1,4 +1,8 @@
-//! This library contains an implementation of EBU R-128 loudness measurement
+//! This library contains an implementation of EBU R-128 loudness measurement.
+//!
+//! It exposes functions to calculate the loudess of a chunk of audio,
+//! plus a higher-level interface that calculates loudness over time
+//! according the restrictions defined in EBU R-128.
 
 #![warn(missing_docs)]
 
@@ -59,8 +63,7 @@ impl Default for GatingType {
     }
 }
 
-/// Convert `usize` channel index to enumerated `Channel`
-pub fn channel_from_index(index: usize) -> Channel {
+fn channel_from_index(index: usize) -> Channel {
     match index {
         0 => Channel::Left,
         1 => Channel::Right,
@@ -101,6 +104,8 @@ fn channel_gain(channel: Channel) -> f64 {
     }
 }
 
+/// These filter co-efficients are taken from ITU-R BS.1770-2 and
+/// require a 48kHz sampling rate.
 fn get_filters() -> (DirectForm1<f64>, DirectForm1<f64>) {
     let stage1 = Coefficients {
         a1: -1.69065929318241,
@@ -163,9 +168,9 @@ fn deinterleave_and_filter(interleaved_samples: &[f64], num_channels: usize) -> 
 /// let left = (-32..32).cycle().take(4800).map(|s| s as f64 / 32.);
 /// let right = left.clone().map(|s| s * 0.5);
 /// let samples: Vec<f64> = left.zip(right).flat_map(|(l,r)| vec![l, r].into_iter()).collect();
-/// assert!(ebur128rs::calculate_loudness_multichannel(samples.as_slice(), 2) > -70.);
+/// assert!(ebur128rs::calculate_loudness_interleaved(samples.as_slice(), 2) > -70.);
 /// ```
-pub fn calculate_loudness_multichannel(interleaved_samples: &[f64], num_channels: usize) -> f64 {
+pub fn calculate_loudness_interleaved(interleaved_samples: &[f64], num_channels: usize) -> f64 {
     let audio = deinterleave_and_filter(interleaved_samples, num_channels);
     let mut sum = 0f64;
     for (index, channel_audio) in audio.into_iter().enumerate() {
@@ -224,7 +229,8 @@ impl State {
     /// Construct a new loudness state. Use `new` instead of `default` if you require
     /// any channel count other than 2 or if you need streaming mode.
     ///
-    /// Currently only 48000Hz sample rate is supported.
+    /// Currently only 48000Hz sample rate is supported. Using other sample rates will
+    /// not produce any errors but will affect the accuracy of the loudness measurement.
     /// ```
     /// let mut state = ebur128rs::State::new(48000., 1, false);
     /// ```
@@ -284,7 +290,7 @@ impl State {
         if interleaved_samples.len() != self.samples_per_audio_block() {
             return Err(Ebur128Error::WrongBlockSize);
         }
-        let loudness = calculate_loudness_multichannel(interleaved_samples, self.channels);
+        let loudness = calculate_loudness_interleaved(interleaved_samples, self.channels);
         self.store_loudness_block(loudness);
         if self.streaming {
             self.update_running_loudness(loudness);
@@ -652,20 +658,20 @@ mod tests {
     }
 
     #[test]
-    fn loudness_multichannel_mono() {
-        let result = calculate_loudness_multichannel(create_noise(48000, 0.5).as_slice(), 1);
+    fn loudness_interleaved_mono() {
+        let result = calculate_loudness_interleaved(create_noise(48000, 0.5).as_slice(), 1);
         assert_ne!(result, 0.);
     }
 
     #[test]
-    fn loudness_multichannel_stereo() {
-        let result = calculate_loudness_multichannel(create_noise(48000 * 2, 0.5).as_slice(), 2);
+    fn loudness_interleaved_stereo() {
+        let result = calculate_loudness_interleaved(create_noise(48000 * 2, 0.5).as_slice(), 2);
         assert_ne!(result, 0.);
     }
 
     #[test]
-    fn loudness_multichannel_5_1() {
-        let result = calculate_loudness_multichannel(create_noise(48000 * 6, 0.5).as_slice(), 6);
+    fn loudness_interleaved_5_1() {
+        let result = calculate_loudness_interleaved(create_noise(48000 * 6, 0.5).as_slice(), 6);
         assert_ne!(result, 0.);
     }
 }
