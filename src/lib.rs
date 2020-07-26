@@ -1,3 +1,7 @@
+//! This library contains an implementation of EBU R-128 loudness measurement
+
+#![warn(missing_docs)]
+
 #[macro_use]
 extern crate enum_display_derive;
 
@@ -12,13 +16,20 @@ const MOMENTARY_BLOCK_S: f64 = 0.4;
 const SHORT_TERM_BLOCK_S: f64 = 3.;
 const GATING_THRESHOLD_ABSOLUTE: f64 = -70.;
 
+/// Enumeration of audio channels in the order they usually appear interleaved.
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Ord, PartialOrd, Debug, Display)]
 pub enum Channel {
+    /// Left channel
     Left = 0,
+    /// Right channel
     Right = 1,
+    /// Centre chanel
     Centre = 2,
-    Lfe = 3, // unused
+    /// Low-frequecy-effects channel (not used)
+    Lfe = 3,
+    /// Left surround channel
     LeftSurround = 4,
+    /// Right surround channel
     RightSurround = 5,
 }
 
@@ -28,10 +39,17 @@ impl Default for Channel {
     }
 }
 
+/// EBU R-128 specifes that audio shall be split into gating blocks and only
+/// those above a threshold shall count towards the loudness.
+/// `GatingType` will determine that threshold in line with the spcification.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Display)]
 pub enum GatingType {
+    /// All blocks are considered
     None,
+    /// Blocks above -70 LUFS are considered
     Absolute,
+    /// Two-pass calculation. Absolute loudness is caluclated first,
+    /// then a threshold 10 LUFS bellow the calculated value is applied.
     Relative,
 }
 
@@ -41,6 +59,7 @@ impl Default for GatingType {
     }
 }
 
+/// Convert `usize` channel index to enumerated `Channel`
 pub fn channel_from_index(index: usize) -> Channel {
     match index {
         0 => Channel::Left,
@@ -52,11 +71,16 @@ pub fn channel_from_index(index: usize) -> Channel {
     }
 }
 
+/// Errors resulting from loudness calculations
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Ord, PartialOrd, Debug, Display)]
 pub enum Ebur128Error {
+    /// Loudness calculation requires more audio to be analyzed before giving a sensible value.
     NotEnoughAudio,
+    /// All audio in the applicable time frame was below the loudness threshold.
     TooQuiet,
+    /// The requested calculation is not available in this mode.
     NotAvailable,
+    /// Audio was fed into `State::process()` with an unsupported block size.
     WrongBlockSize,
 }
 
@@ -100,22 +124,17 @@ fn get_filters() -> (DirectForm1<f64>, DirectForm1<f64>) {
     )
 }
 
-pub fn calculate_channel_loudness(channel: Channel, samples: &[f64]) -> f64 {
-    // FIXME: assume the audio block is the correct length
-    // FIXME: assume sampling rate is 48kHz
-    let mut filtered_audio: Vec<f64> = Vec::with_capacity(samples.len());
-    let (mut f1, mut f2) = get_filters();
-    for sample in samples {
-        filtered_audio.push(f2.run(f1.run(*sample)));
-    }
-    root_mean(filtered_audio.as_slice()) * channel_gain(channel)
-}
-
-pub fn calculate_channel(samples: &[f64], channel: Channel) -> f64 {
+/// Calculate the loudness of a slice of samples from a single channel
+/// ```
+/// let samples: Vec<f64> = (-32..32).cycle().take(4800).map(|s| s as f64 / 32.).collect();
+/// let channel = ebur128rs::Channel::Left;
+/// assert!(ebur128rs::calculate_loudness(samples.as_slice(), channel) > -70.);
+/// ```
+pub fn calculate_loudness(samples: &[f64], channel: Channel) -> f64 {
     root_mean(samples) * channel_gain(channel)
 }
 
-pub fn deinterleave(samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
+fn deinterleave(samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
     (0..num_channels)
         .map(|n| {
             samples
@@ -128,7 +147,7 @@ pub fn deinterleave(samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
         .collect()
 }
 
-pub fn deinterleave_and_filter(interleaved_samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
+fn deinterleave_and_filter(interleaved_samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
     let mut audio = deinterleave(interleaved_samples, num_channels);
     let mut filters = vec![get_filters(); num_channels];
     for (channel, (mut f1, mut f2)) in audio.iter_mut().zip(filters.iter_mut()) {
@@ -139,6 +158,13 @@ pub fn deinterleave_and_filter(interleaved_samples: &[f64], num_channels: usize)
     audio
 }
 
+/// Calculate the loudness of a slice of interleaved samples
+/// ```
+/// let left = (-32..32).cycle().take(4800).map(|s| s as f64 / 32.);
+/// let right = left.clone().map(|s| s * 0.5);
+/// let samples: Vec<f64> = left.zip(right).flat_map(|(l,r)| vec![l, r].into_iter()).collect();
+/// assert!(ebur128rs::calculate_loudness_multichannel(samples.as_slice(), 2) > -70.);
+/// ```
 pub fn calculate_loudness_multichannel(interleaved_samples: &[f64], num_channels: usize) -> f64 {
     let audio = deinterleave_and_filter(interleaved_samples, num_channels);
     let mut sum = 0f64;
@@ -147,11 +173,26 @@ pub fn calculate_loudness_multichannel(interleaved_samples: &[f64], num_channels
         if channel == Channel::Lfe {
             continue;
         }
-        sum += calculate_channel(channel_audio.as_slice(), channel);
+        sum += calculate_loudness(channel_audio.as_slice(), channel);
     }
     -0.691 + (10. * sum.log10())
 }
 
+/// Struct that calculates consecutive loudness blocks and offers
+/// various loudness calculation types.
+/// ```
+/// use ebur128rs::{State, GatingType};
+///
+/// let left = (-32..32).cycle().take(4800).map(|s| s as f64 / 32.);
+/// let right = left.clone().map(|s| s * 0.5);
+/// let samples: Vec<f64> = left.zip(right).flat_map(|(l,r)| vec![l, r].into_iter()).collect();
+///
+/// let mut state = State::default();
+/// for _ in (0..20) {
+///     assert!(state.process(samples.as_slice()).is_ok());
+///     println!("{:?}", state.integrated_loudness(GatingType::Absolute));
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct State {
     sample_rate: f64,
@@ -163,12 +204,30 @@ pub struct State {
 }
 
 impl Default for State {
+    /// Construct a new loudness state with sample rate 48000Hz, 2 channels, in non-streaming mode.
+    /// ```
+    /// use ebur128rs::{State, GatingType};
+    ///
+    /// let samples: Vec<f64> = (-32..32).cycle().take(9600).map(|s| s as f64 / 32.).collect();
+    ///
+    /// let mut state = State::default();
+    /// state.process(samples.as_slice());
+    ///
+    /// println!("{:?}", state.integrated_loudness(GatingType::Absolute));
+    /// ```
     fn default() -> Self {
         State::new(48000., 2, false)
     }
 }
 
 impl State {
+    /// Construct a new loudness state. Use `new` instead of `default` if you require
+    /// any channel count other than 2 or if you need streaming mode.
+    ///
+    /// Currently only 48000Hz sample rate is supported.
+    /// ```
+    /// let mut state = ebur128rs::State::new(48000., 1, false);
+    /// ```
     pub fn new(sample_rate: f64, channels: usize, streaming: bool) -> State {
         State {
             sample_rate: sample_rate,
@@ -214,6 +273,13 @@ impl State {
         }
     }
 
+    /// Process a block of interleaved samples. The block must be exactly 100ms long.
+    /// ```
+    /// let mut state = ebur128rs::State::default(); // 2 channels, 48000 Hz
+    /// assert!(state.process(&[0.; 9600]).is_ok());
+    /// assert!(state.process(&[0.; 9601]).is_err());
+    /// assert!(state.process(&[0.; 9599]).is_err());
+    /// ```
     pub fn process(&mut self, interleaved_samples: &[f64]) -> Result<(), Ebur128Error> {
         if interleaved_samples.len() != self.samples_per_audio_block() {
             return Err(Ebur128Error::WrongBlockSize);
@@ -249,6 +315,19 @@ impl State {
             / blocks_above_threshold as f64)
     }
 
+    /// Calculate the loudness of the entire history.
+    /// ```
+    /// use ebur128rs::{State, GatingType};
+    ///
+    /// let samples: Vec<f64> = (-32..32).cycle().take(9600).map(|s| s as f64 / 32.).collect();
+    ///
+    /// let mut state = State::default(); // 2 channels, 48000 Hz
+    /// for _ in (0..10) {
+    ///     assert!(state.process(samples.as_slice()).is_ok());
+    /// }
+    ///
+    /// println!("Integrated loudness is {:?}", state.integrated_loudness(GatingType::Relative));
+    /// ```
     pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
         if self.streaming {
             if gating == GatingType::Relative {
@@ -262,6 +341,19 @@ impl State {
         self.loudness(gating, 0)
     }
 
+    /// Calculate the loudness of the last 3 seconds.
+    /// ```
+    /// use ebur128rs::{State, GatingType};
+    ///
+    /// let samples: Vec<f64> = (-32..32).cycle().take(9600).map(|s| s as f64 / 32.).collect();
+    ///
+    /// let mut state = State::default(); // 2 channels, 48000 Hz
+    /// for _ in (0..10) {
+    ///     assert!(state.process(samples.as_slice()).is_ok());
+    /// }
+    ///
+    /// println!("Integrated loudness is {:?}", state.short_term_loudness(GatingType::Relative));
+    /// ```
     pub fn short_term_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
         let starting_block_idx = self
             .loudness_blocks
@@ -271,6 +363,19 @@ impl State {
         self.loudness(gating, starting_block_idx)
     }
 
+    /// Calculate the loudness of the last 400 milliseconds.
+    /// ```
+    /// use ebur128rs::{State, GatingType};
+    ///
+    /// let samples: Vec<f64> = (-32..32).cycle().take(9600).map(|s| s as f64 / 32.).collect();
+    ///
+    /// let mut state = State::default(); // 2 channels, 48000 Hz
+    /// for _ in (0..10) {
+    ///     assert!(state.process(samples.as_slice()).is_ok());
+    /// }
+    ///
+    /// println!("Integrated loudness is {:?}", state.momentary_loudness(GatingType::Relative));
+    /// ```
     pub fn momentary_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
         let starting_block_idx = self
             .loudness_blocks
@@ -504,23 +609,11 @@ mod tests {
 
     #[test]
     fn channel_loudness() {
-        assert_gt!(calculate_channel_loudness(Channel::Left, &[1., 1., 1.]), 2.);
-        assert_gt!(
-            calculate_channel_loudness(Channel::Right, &[1., 1., 1.]),
-            2.
-        );
-        assert_gt!(
-            calculate_channel_loudness(Channel::Centre, &[1., 1., 1.]),
-            2.
-        );
-        assert_gt!(
-            calculate_channel_loudness(Channel::LeftSurround, &[1., 1., 1.]),
-            2.5
-        );
-        assert_gt!(
-            calculate_channel_loudness(Channel::RightSurround, &[1., 1., 1.]),
-            2.5
-        );
+        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::Left), 1.);
+        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::Right), 1.);
+        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::Centre), 1.);
+        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::LeftSurround), 1.41);
+        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::RightSurround), 1.41);
     }
 
     #[test]
