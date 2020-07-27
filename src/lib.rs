@@ -67,6 +67,21 @@ impl Default for GatingType {
     }
 }
 
+/// Determines how much history a `State` will store for future loudness calculations
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Display)]
+pub enum Mode {
+    /// All blocks are stored
+    Normal,
+    /// Only enough block so calculate short-term loudness are stored
+    Streaming,
+}
+
+impl Default for Mode {
+    fn default() -> Self {
+        Mode::Normal
+    }
+}
+
 fn channel_from_index(index: usize) -> Channel {
     match index {
         0 => Channel::Left,
@@ -216,7 +231,7 @@ pub struct State {
     loudness_blocks: Vec<f64>,
     running_loudness: f64,
     blocks_processed: f64,
-    streaming: bool,
+    mode: Mode,
 }
 
 impl Default for State {
@@ -232,7 +247,7 @@ impl Default for State {
     /// println!("{:?}", state.integrated_loudness(GatingType::Absolute));
     /// ```
     fn default() -> Self {
-        State::new(48000., 2, false)
+        State::new(48000., 2, Mode::Normal)
     }
 }
 
@@ -249,16 +264,16 @@ impl State {
     /// Currently only 48000Hz sample rate is supported. Using other sample rates will
     /// not produce any errors but will affect the accuracy of the loudness measurement.
     /// ```
-    /// let mut state = ebur128rs::State::new(48000., 1, false);
+    /// let mut state = ebur128rs::State::new(48000., 1, ebur128rs::Mode::Streaming);
     /// ```
-    pub fn new(sample_rate: f64, channels: usize, streaming: bool) -> State {
+    pub fn new(sample_rate: f64, channels: usize, mode: Mode) -> State {
         State {
             sample_rate: sample_rate,
             channels: channels,
             loudness_blocks: vec![],
             running_loudness: 0.,
             blocks_processed: 0.,
-            streaming: streaming,
+            mode: mode,
         }
     }
 
@@ -289,7 +304,7 @@ impl State {
 
     fn store_loudness_block(&mut self, loudness: f64) {
         self.loudness_blocks.push(loudness);
-        if self.streaming {
+        if self.mode == Mode::Streaming {
             while self.loudness_blocks.len() > Self::short_term_loudness_blocks() {
                 self.loudness_blocks.remove(0);
             }
@@ -312,7 +327,7 @@ impl State {
         }
         let loudness = calculate_loudness_interleaved(interleaved_samples, self.channels);
         self.store_loudness_block(loudness);
-        if self.streaming {
+        if self.mode == Mode::Streaming {
             self.update_running_loudness(loudness);
         }
         Ok(())
@@ -355,7 +370,7 @@ impl State {
     /// println!("Integrated loudness is {:?}", state.integrated_loudness(GatingType::Relative));
     /// ```
     pub fn integrated_loudness(&self, gating: GatingType) -> Result<f64, Ebur128Error> {
-        if self.streaming {
+        if self.mode == Mode::Streaming {
             if gating == GatingType::Relative {
                 return Err(Ebur128Error::NotAvailable);
             }
@@ -567,7 +582,7 @@ mod tests {
 
     #[test]
     fn streaming_mode_integrated_loudness() {
-        let mut state = State::new(48000., 1, true);
+        let mut state = State::new(48000., 1, Mode::Streaming);
         for _ in 0..30 {
             assert_eq!(
                 state.process(create_noise(4800, 0.5).into_iter()).is_ok(),
@@ -580,7 +595,7 @@ mod tests {
 
     #[test]
     fn streaming_mode_no_relative_threshold() {
-        let mut state = State::new(48000., 1, true);
+        let mut state = State::new(48000., 1, Mode::Streaming);
         for _ in 0..30 {
             assert_eq!(
                 state.process(create_noise(4800, 0.5).into_iter()).is_ok(),
@@ -595,7 +610,7 @@ mod tests {
 
     #[test]
     fn streaming_mode_short_term_loudness_ungated() {
-        let mut state = State::new(48000., 2, true);
+        let mut state = State::new(48000., 2, Mode::Streaming);
         for _ in 0..30 {
             assert!(state.process(create_noise(9600, 0.1).into_iter()).is_ok());
         }
@@ -609,7 +624,7 @@ mod tests {
 
     #[test]
     fn streaming_mode_momentary_loudness_ungated() {
-        let mut state = State::new(48000., 2, true);
+        let mut state = State::new(48000., 2, Mode::Streaming);
         for _ in 0..30 {
             assert!(state.process(create_noise(9600, 0.1).into_iter()).is_ok());
         }
@@ -631,7 +646,7 @@ mod tests {
         // Specification states:
         // "If a 0 dB FS 1 kHz sine wave is applied to the left, centre,
         // or right channel input, the indicated loudness will equal -3.01 LKFS."
-        let mut state = State::new(48000., 1, false);
+        let mut state = State::new(48000., 1, Mode::Normal);
         assert!(state.process(tone_1k().into_iter().take(4800)).is_ok());
         let loudness = state.integrated_loudness(GatingType::Absolute).unwrap();
         assert_close_enough!(loudness, -3.01, 0.01);
