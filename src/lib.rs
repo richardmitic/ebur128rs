@@ -214,13 +214,14 @@ pub fn calculate_loudness_interleaved<I: ExactSizeIterator<Item = f64>>(
 /// ```
 /// use ebur128rs::{State, GatingType};
 ///
-/// let left = (-32..32).cycle().take(4800).map(|s| s as f64 / 32.);
+/// let left = (0..4800).map(|i| (1000. * (i as f64 / 48000.)).sin());
 /// let right = left.clone().map(|s| s * 0.5);
-/// let samples = (0..9600).map(|i| (1000. * (i as f64 / 48000.)).sin());
+/// let samples: Vec<f64> = left.zip(right).flat_map(|(l,r)| vec![l, r].into_iter()).collect();
+/// let sample_iter = samples.into_iter();
 ///
 /// let mut state = State::default();
-/// for _ in (0..20) {
-///     assert!(state.process(samples.clone()).is_ok());
+/// for _ in (0..10) {
+///     assert!(state.process(sample_iter.clone()).is_ok());
 ///     println!("{:?}", state.integrated_loudness(GatingType::Absolute));
 /// }
 /// ```
