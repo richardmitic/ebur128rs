@@ -134,7 +134,7 @@ fn get_filters() -> (DirectForm1<f64>, DirectForm1<f64>) {
     )
 }
 
-/// Calculate the loudness of a slice of samples from a single channel
+/// Calculate the loudness of audio in a single channel
 /// ```
 /// let samples = (0..4800).map(|i| (1000. * (i as f64 / 48000.)).sin());
 /// let channel = ebur128rs::Channel::Left;
@@ -171,7 +171,7 @@ fn deinterleave_and_filter<I: ExactSizeIterator<Item = f64>>(
     audio
 }
 
-/// Calculate the loudness of a slice of interleaved samples
+/// Calculate the loudness of interleaved audio
 /// ```
 /// let left = (0..4800).map(|i| (1000. * (i as f64 / 48000.)).sin());
 /// let right = left.clone().map(|s| s * 0.5);
