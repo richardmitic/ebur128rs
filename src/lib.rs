@@ -93,8 +93,9 @@ pub enum Ebur128Error {
 
 impl Error for Ebur128Error {}
 
-fn root_mean(values: &[f64]) -> f64 {
-    values.iter().map(|v| (*v).powi(2)).sum::<f64>() / values.len() as f64
+fn root_mean<I: ExactSizeIterator<Item = f64>>(values: I) -> f64 {
+    let divisor = values.len() as f64;
+    values.map(|v| v * v).sum::<f64>() / divisor
 }
 
 fn channel_gain(channel: Channel) -> f64 {
@@ -135,28 +136,31 @@ fn get_filters() -> (DirectForm1<f64>, DirectForm1<f64>) {
 
 /// Calculate the loudness of a slice of samples from a single channel
 /// ```
-/// let samples: Vec<f64> = (-32..32).cycle().take(4800).map(|s| s as f64 / 32.).collect();
+/// let samples = (0..4800).map(|i| (1000. * (i as f64 / 48000.)).sin());
 /// let channel = ebur128rs::Channel::Left;
-/// assert!(ebur128rs::calculate_loudness(samples.as_slice(), channel) > -70.);
+/// assert!(ebur128rs::calculate_loudness(samples.into_iter(), channel) > -70.);
 /// ```
-pub fn calculate_loudness(samples: &[f64], channel: Channel) -> f64 {
+pub fn calculate_loudness<I: ExactSizeIterator<Item = f64>>(samples: I, channel: Channel) -> f64 {
     root_mean(samples) * channel_gain(channel)
 }
 
-fn deinterleave(samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
-    (0..num_channels)
-        .map(|n| {
-            samples
-                .iter()
-                .skip(n)
-                .step_by(num_channels)
-                .map(|s| *s)
-                .collect()
-        })
-        .collect()
+fn deinterleave<I: ExactSizeIterator<Item = f64>>(
+    samples: I,
+    num_channels: usize,
+) -> Vec<Vec<f64>> {
+    let mut deinterleaved: Vec<Vec<f64>> =
+        vec![Vec::with_capacity(samples.len() / num_channels); num_channels];
+    let index = (0..num_channels).cycle();
+    for (sample, idx) in samples.zip(index) {
+        deinterleaved[idx].push(sample);
+    }
+    deinterleaved
 }
 
-fn deinterleave_and_filter(interleaved_samples: &[f64], num_channels: usize) -> Vec<Vec<f64>> {
+fn deinterleave_and_filter<I: ExactSizeIterator<Item = f64>>(
+    interleaved_samples: I,
+    num_channels: usize,
+) -> Vec<Vec<f64>> {
     let mut audio = deinterleave(interleaved_samples, num_channels);
     let mut filters = vec![get_filters(); num_channels];
     for (channel, (mut f1, mut f2)) in audio.iter_mut().zip(filters.iter_mut()) {
@@ -169,12 +173,15 @@ fn deinterleave_and_filter(interleaved_samples: &[f64], num_channels: usize) -> 
 
 /// Calculate the loudness of a slice of interleaved samples
 /// ```
-/// let left = (-32..32).cycle().take(4800).map(|s| s as f64 / 32.);
+/// let left = (0..4800).map(|i| (1000. * (i as f64 / 48000.)).sin());
 /// let right = left.clone().map(|s| s * 0.5);
 /// let samples: Vec<f64> = left.zip(right).flat_map(|(l,r)| vec![l, r].into_iter()).collect();
-/// assert!(ebur128rs::calculate_loudness_interleaved(samples.as_slice(), 2) > -70.);
+/// assert!(ebur128rs::calculate_loudness_interleaved(samples.into_iter(), 2) > -70.);
 /// ```
-pub fn calculate_loudness_interleaved(interleaved_samples: &[f64], num_channels: usize) -> f64 {
+pub fn calculate_loudness_interleaved<I: ExactSizeIterator<Item = f64>>(
+    interleaved_samples: I,
+    num_channels: usize,
+) -> f64 {
     let audio = deinterleave_and_filter(interleaved_samples, num_channels);
     let mut sum = 0f64;
     for (index, channel_audio) in audio.into_iter().enumerate() {
@@ -182,7 +189,7 @@ pub fn calculate_loudness_interleaved(interleaved_samples: &[f64], num_channels:
         if channel == Channel::Lfe {
             continue;
         }
-        sum += calculate_loudness(channel_audio.as_slice(), channel);
+        sum += calculate_loudness(channel_audio.iter().cloned(), channel);
     }
     -0.691 + (10. * sum.log10())
 }
@@ -194,11 +201,11 @@ pub fn calculate_loudness_interleaved(interleaved_samples: &[f64], num_channels:
 ///
 /// let left = (-32..32).cycle().take(4800).map(|s| s as f64 / 32.);
 /// let right = left.clone().map(|s| s * 0.5);
-/// let samples: Vec<f64> = left.zip(right).flat_map(|(l,r)| vec![l, r].into_iter()).collect();
+/// let samples = (0..9600).map(|i| (1000. * (i as f64 / 48000.)).sin());
 ///
 /// let mut state = State::default();
 /// for _ in (0..20) {
-///     assert!(state.process(samples.as_slice()).is_ok());
+///     assert!(state.process(samples.clone()).is_ok());
 ///     println!("{:?}", state.integrated_loudness(GatingType::Absolute));
 /// }
 /// ```
@@ -217,10 +224,10 @@ impl Default for State {
     /// ```
     /// use ebur128rs::{State, GatingType};
     ///
-    /// let samples: Vec<f64> = (-32..32).cycle().take(9600).map(|s| s as f64 / 32.).collect();
+    /// let samples = (0..9600).map(|i| (1000. * (i as f64 / 48000.)).sin());
     ///
     /// let mut state = State::default();
-    /// state.process(samples.as_slice());
+    /// state.process(samples);
     ///
     /// println!("{:?}", state.integrated_loudness(GatingType::Absolute));
     /// ```
@@ -292,11 +299,14 @@ impl State {
     /// Process a block of interleaved samples. The block must be exactly 100ms long.
     /// ```
     /// let mut state = ebur128rs::State::default(); // 2 channels, 48000 Hz
-    /// assert!(state.process(&[0.; 9600]).is_ok());
-    /// assert!(state.process(&[0.; 9601]).is_err());
-    /// assert!(state.process(&[0.; 9599]).is_err());
+    /// assert!(state.process(vec![0.; 9600].into_iter()).is_ok());
+    /// assert!(state.process(vec![0.; 9601].into_iter()).is_err());
+    /// assert!(state.process(vec![0.; 9599].into_iter()).is_err());
     /// ```
-    pub fn process(&mut self, interleaved_samples: &[f64]) -> Result<(), Ebur128Error> {
+    pub fn process<I: ExactSizeIterator<Item = f64>>(
+        &mut self,
+        interleaved_samples: I,
+    ) -> Result<(), Ebur128Error> {
         if interleaved_samples.len() != self.samples_per_audio_block() {
             return Err(Ebur128Error::WrongBlockSize);
         }
@@ -335,11 +345,11 @@ impl State {
     /// ```
     /// use ebur128rs::{State, GatingType};
     ///
-    /// let samples: Vec<f64> = (-32..32).cycle().take(9600).map(|s| s as f64 / 32.).collect();
+    /// let samples = (0..9600).map(|i| (1000. * (i as f64 / 48000.)).sin());
     ///
     /// let mut state = State::default(); // 2 channels, 48000 Hz
     /// for _ in (0..10) {
-    ///     assert!(state.process(samples.as_slice()).is_ok());
+    ///     assert!(state.process(samples.clone()).is_ok());
     /// }
     ///
     /// println!("Integrated loudness is {:?}", state.integrated_loudness(GatingType::Relative));
@@ -361,11 +371,11 @@ impl State {
     /// ```
     /// use ebur128rs::{State, GatingType};
     ///
-    /// let samples: Vec<f64> = (-32..32).cycle().take(9600).map(|s| s as f64 / 32.).collect();
+    /// let samples = (0..9600).map(|i| (1000. * (i as f64 / 48000.)).sin());
     ///
     /// let mut state = State::default(); // 2 channels, 48000 Hz
     /// for _ in (0..10) {
-    ///     assert!(state.process(samples.as_slice()).is_ok());
+    ///     assert!(state.process(samples.clone()).is_ok());
     /// }
     ///
     /// println!("Integrated loudness is {:?}", state.short_term_loudness(GatingType::Relative));
@@ -383,11 +393,11 @@ impl State {
     /// ```
     /// use ebur128rs::{State, GatingType};
     ///
-    /// let samples: Vec<f64> = (-32..32).cycle().take(9600).map(|s| s as f64 / 32.).collect();
+    /// let samples = (0..9600).map(|i| (1000. * (i as f64 / 48000.)).sin());
     ///
     /// let mut state = State::default(); // 2 channels, 48000 Hz
     /// for _ in (0..10) {
-    ///     assert!(state.process(samples.as_slice()).is_ok());
+    ///     assert!(state.process(samples.clone()).is_ok());
     /// }
     ///
     /// println!("Integrated loudness is {:?}", state.momentary_loudness(GatingType::Relative));
@@ -439,27 +449,27 @@ mod tests {
     #[test]
     fn input_too_short() {
         let mut state = State::default();
-        assert!(state.process(vec![0f64; 9599].as_slice()).is_err());
+        assert!(state.process(vec![0f64; 9599].into_iter()).is_err());
     }
 
     #[test]
     fn input_too_long() {
         let mut state = State::default();
-        assert!(state.process(vec![0f64; 9601].as_slice()).is_err());
+        assert!(state.process(vec![0f64; 9601].into_iter()).is_err());
     }
 
     #[test]
     fn input_correct_length() {
         let mut state = State::default();
-        assert!(state.process(vec![0f64; 9600].as_slice()).is_ok());
+        assert!(state.process(vec![0f64; 9600].into_iter()).is_ok());
     }
 
     #[test]
     fn integrated_loudness_multiple_frames() {
         let mut state = State::default();
-        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         let loudness1 = state.integrated_loudness(GatingType::None).unwrap();
-        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         let loudness2 = state.integrated_loudness(GatingType::None).unwrap();
         assert_close_enough!(loudness1, loudness2, 0.1);
     }
@@ -467,11 +477,11 @@ mod tests {
     #[test]
     fn integrated_loudness_ungated() {
         let mut state = State::default();
-        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         let loudness1 = state.integrated_loudness(GatingType::None).unwrap();
-        assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.1).into_iter()).is_ok());
         let loudness2 = state.integrated_loudness(GatingType::None).unwrap();
-        assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.9).into_iter()).is_ok());
         let loudness3 = state.integrated_loudness(GatingType::None).unwrap();
         assert_gt!(loudness1, loudness2);
         assert_lt!(loudness2, loudness3);
@@ -480,11 +490,13 @@ mod tests {
     #[test]
     fn integrated_loudness_gated_absolute() {
         let mut state = State::default();
-        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         let loudness1 = state.integrated_loudness(GatingType::Absolute).unwrap();
-        assert!(state.process(create_noise(9600, 0.0001).as_slice()).is_ok());
+        assert!(state
+            .process(create_noise(9600, 0.0001).into_iter())
+            .is_ok());
         let loudness2 = state.integrated_loudness(GatingType::Absolute).unwrap();
-        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         let loudness3 = state.integrated_loudness(GatingType::Absolute).unwrap();
         assert_eq!(loudness1, loudness2);
         assert_close_enough!(loudness1, loudness3, 0.1);
@@ -493,11 +505,11 @@ mod tests {
     #[test]
     fn integrated_loudness_gated_relative() {
         let mut state = State::default();
-        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         let loudness1 = state.integrated_loudness(GatingType::Relative).unwrap();
-        assert!(state.process(create_noise(9600, 0.01).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.01).into_iter()).is_ok());
         let loudness2 = state.integrated_loudness(GatingType::Relative).unwrap();
-        assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+        assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         let loudness3 = state.integrated_loudness(GatingType::Relative).unwrap();
         assert_eq!(loudness1, loudness2);
         assert_close_enough!(loudness1, loudness3, 0.1);
@@ -507,10 +519,10 @@ mod tests {
     fn short_term_loudness_ungated() {
         let mut state = State::default();
         for _ in 0..30 {
-            assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.1).into_iter()).is_ok());
         }
         for _ in 0..30 {
-            assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.9).into_iter()).is_ok());
         }
         let il = state.integrated_loudness(GatingType::None).unwrap();
         let stl = state.short_term_loudness(GatingType::None).unwrap();
@@ -521,13 +533,13 @@ mod tests {
     fn momentary_loudness_ungated() {
         let mut state = State::default();
         for _ in 0..30 {
-            assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.1).into_iter()).is_ok());
         }
         for _ in 0..30 {
-            assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         }
         for _ in 0..4 {
-            assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.9).into_iter()).is_ok());
         }
         let il = state.integrated_loudness(GatingType::None).unwrap();
         let stl = state.short_term_loudness(GatingType::None).unwrap();
@@ -541,7 +553,9 @@ mod tests {
         let mut state = State::default();
         for _ in 0..30 {
             assert_eq!(
-                state.process(create_noise(9600, 0.0001).as_slice()).is_ok(),
+                state
+                    .process(create_noise(9600, 0.0001).into_iter())
+                    .is_ok(),
                 true
             );
         }
@@ -556,7 +570,7 @@ mod tests {
         let mut state = State::new(48000., 1, true);
         for _ in 0..30 {
             assert_eq!(
-                state.process(create_noise(4800, 0.5).as_slice()).is_ok(),
+                state.process(create_noise(4800, 0.5).into_iter()).is_ok(),
                 true
             );
         }
@@ -569,7 +583,7 @@ mod tests {
         let mut state = State::new(48000., 1, true);
         for _ in 0..30 {
             assert_eq!(
-                state.process(create_noise(4800, 0.5).as_slice()).is_ok(),
+                state.process(create_noise(4800, 0.5).into_iter()).is_ok(),
                 true
             );
         }
@@ -583,10 +597,10 @@ mod tests {
     fn streaming_mode_short_term_loudness_ungated() {
         let mut state = State::new(48000., 2, true);
         for _ in 0..30 {
-            assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.1).into_iter()).is_ok());
         }
         for _ in 0..30 {
-            assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.9).into_iter()).is_ok());
         }
         let il = state.integrated_loudness(GatingType::None).unwrap();
         let stl = state.short_term_loudness(GatingType::None).unwrap();
@@ -597,13 +611,13 @@ mod tests {
     fn streaming_mode_momentary_loudness_ungated() {
         let mut state = State::new(48000., 2, true);
         for _ in 0..30 {
-            assert!(state.process(create_noise(9600, 0.1).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.1).into_iter()).is_ok());
         }
         for _ in 0..30 {
-            assert!(state.process(create_noise(9600, 0.5).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.5).into_iter()).is_ok());
         }
         for _ in 0..4 {
-            assert!(state.process(create_noise(9600, 0.9).as_slice()).is_ok());
+            assert!(state.process(create_noise(9600, 0.9).into_iter()).is_ok());
         }
         let il = state.integrated_loudness(GatingType::None).unwrap();
         let stl = state.short_term_loudness(GatingType::None).unwrap();
@@ -618,40 +632,63 @@ mod tests {
         // "If a 0 dB FS 1 kHz sine wave is applied to the left, centre,
         // or right channel input, the indicated loudness will equal -3.01 LKFS."
         let mut state = State::new(48000., 1, false);
-        assert!(state.process(&tone_1k()[0..4800]).is_ok());
+        assert!(state.process(tone_1k().into_iter().take(4800)).is_ok());
         let loudness = state.integrated_loudness(GatingType::Absolute).unwrap();
         assert_close_enough!(loudness, -3.01, 0.01);
     }
 
     #[test]
     fn channel_loudness() {
-        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::Left), 1.);
-        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::Right), 1.);
-        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::Centre), 1.);
-        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::LeftSurround), 1.41);
-        assert_eq!(calculate_loudness(&[1., 1., 1.], Channel::RightSurround), 1.41);
+        assert_eq!(
+            calculate_loudness(vec![1., 1., 1.].into_iter(), Channel::Left),
+            1.
+        );
+        assert_eq!(
+            calculate_loudness(vec![1., 1., 1.].into_iter(), Channel::Right),
+            1.
+        );
+        assert_eq!(
+            calculate_loudness(vec![1., 1., 1.].into_iter(), Channel::Centre),
+            1.
+        );
+        assert_eq!(
+            calculate_loudness(vec![1., 1., 1.].into_iter(), Channel::LeftSurround),
+            1.41
+        );
+        assert_eq!(
+            calculate_loudness(vec![1., 1., 1.].into_iter(), Channel::RightSurround),
+            1.41
+        );
     }
 
     #[test]
     fn deinterleave_works() {
         assert_eq!(
-            deinterleave(&[0., 1., 0., 1.], 2),
+            deinterleave(vec![0., 1., 0., 1.].into_iter(), 2),
             vec![[0., 0.,], [1., 1.,]]
         );
     }
 
     #[test]
     fn deinterleave_and_filter_works() {
-        let (mut f1, mut f2) = get_filters();
+        let (mut f1l, mut f2l) = get_filters();
+        let (mut f1r, mut f2r) = get_filters();
+
         let left_result: Vec<f64> = vec![0., 1., 1., 1., 1., 1.]
             .into_iter()
-            .map(|s| f2.run(f1.run(s)))
+            .map(|s| f2l.run(f1l.run(s)))
             .collect();
 
-        let samples = &[0., 0., 1., 2., 1., 2., 1., 2., 1., 2., 1., 2.];
-        let result = deinterleave_and_filter(samples, 2);
+        let right_result: Vec<f64> = vec![0., 2., 2., 2., 2., 2.]
+            .into_iter()
+            .map(|s| f2r.run(f1r.run(s)))
+            .collect();
+
+        let samples: Vec<f64> = vec![0., 0., 1., 2., 1., 2., 1., 2., 1., 2., 1., 2.];
+        let result = deinterleave_and_filter(samples.into_iter(), 2);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], left_result);
+        assert_eq!(result[1], right_result);
     }
 
     #[test]
@@ -669,19 +706,19 @@ mod tests {
 
     #[test]
     fn loudness_interleaved_mono() {
-        let result = calculate_loudness_interleaved(create_noise(48000, 0.5).as_slice(), 1);
+        let result = calculate_loudness_interleaved(create_noise(48000, 0.5).into_iter(), 1);
         assert_ne!(result, 0.);
     }
 
     #[test]
     fn loudness_interleaved_stereo() {
-        let result = calculate_loudness_interleaved(create_noise(48000 * 2, 0.5).as_slice(), 2);
+        let result = calculate_loudness_interleaved(create_noise(48000 * 2, 0.5).into_iter(), 2);
         assert_ne!(result, 0.);
     }
 
     #[test]
     fn loudness_interleaved_5_1() {
-        let result = calculate_loudness_interleaved(create_noise(48000 * 6, 0.5).as_slice(), 6);
+        let result = calculate_loudness_interleaved(create_noise(48000 * 6, 0.5).into_iter(), 6);
         assert_ne!(result, 0.);
     }
 }
