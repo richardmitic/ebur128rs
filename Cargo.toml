@@ -1,6 +1,6 @@
 [package]
 name = "ebur128rs"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["richardmitic"]
 edition = "2018"
 description = "Implementation of EBU R-128 loudness measurement"
